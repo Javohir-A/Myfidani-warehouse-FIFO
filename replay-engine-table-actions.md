@@ -56,25 +56,25 @@ Whenever you create/update/delete any relevant event in that scope, you run a re
 
 **User intent**: accept goods from a truck into warehouse, with per-item `batches_id` (especially for mixed trucks).
 
-#### Table actions
+#### Table actions (Receiving)
 
-1) **Create** `warehouse_transactions`
+1. **Create** `warehouse_transactions`
    - `type = ["receiving"]`
    - `warehouse_id`
    - `batch_transport_units_id`
    - `document_date`
    - other header fields (partners/branches/etc.)
 
-2) **Create** `warehouse_transaction_items` (one per product line)
+2. **Create** `warehouse_transaction_items` (one per product line)
    - `warehouse_transactions_id = <receiving>`
    - `products_id`
    - `batches_id` (**Party id** from procurement content)
    - actual received weight/count fields
 
-3) **Trigger recompute** for scope (`warehouse_id`, `products_id`) for each affected product.
+3. **Trigger recompute** for scope (`warehouse_id`, `products_id`) for each affected product.
    - Recompute will rebuild stock layers and derived allocations (see section 5).
 
-#### Result expectation
+#### Result expectation (Receiving)
 
 - Stock increases in the correct party (`batches_id`), and later shipments may redistribute across parties if history is edited (Excel behavior).
 
@@ -84,23 +84,23 @@ Whenever you create/update/delete any relevant event in that scope, you run a re
 
 **User intent**: ship goods out (issue). This consumes FIFO layers across parties.
 
-#### Table actions
+#### Table actions (Shipment)
 
-1) **Create** `warehouse_transactions`
+1. **Create** `warehouse_transactions`
    - `type = ["shipment"]` (or `issue` depending on your naming)
    - `warehouse_id`
    - `document_date`
    - link to order if applicable
 
-2) **Create** `warehouse_transaction_items` (one per shipped product line)
+2. **Create** `warehouse_transaction_items` (one per shipped product line)
    - `warehouse_transactions_id = <shipment>`
    - `products_id`
    - shipped weight/count fields
    - (optional) selection method if you support “by truck”
 
-3) **Trigger recompute** for each affected product scope (`warehouse_id`, `products_id`)
+3. **Trigger recompute** for each affected product scope (`warehouse_id`, `products_id`)
 
-#### Result expectation
+#### Result expectation (Shipment)
 
 - Shipment consumes from the earliest party (by party order) and earliest layers (`received_at`) within that party.
 - Derived allocation links are created in `warehouse_transaction_stock_items`.
@@ -111,22 +111,22 @@ Whenever you create/update/delete any relevant event in that scope, you run a re
 
 **User intent**: return goods back to warehouse, attached to a specific shipment.
 
-#### Table actions
+#### Table actions (Return)
 
-1) **Create** `warehouse_transactions`
+1. **Create** `warehouse_transactions`
    - `type = ["return"]`
    - `warehouse_id`
    - `document_date`
    - reference to the original shipment (store shipment id in a header field or comment/relationship field)
 
-2) **Create** `warehouse_transaction_items`
+2. **Create** `warehouse_transaction_items`
    - `warehouse_transactions_id = <return>`
    - `products_id`
    - returned weight/count
 
-3) **Trigger recompute** for affected scopes.
+3. **Trigger recompute** for affected scopes.
 
-#### Result expectation
+#### Result expectation (Return)
 
 - Return should restore stock in a stable way.
 - Best rule: return “undoes” the same FIFO layers the shipment consumed (so it remains correct even if FIFO changes after edits).
@@ -139,24 +139,24 @@ That requires allocations to exist (or be rebuilt) in `warehouse_transaction_sto
 
 **User intent**: reconcile system vs physical stock at a time.
 
-#### Table actions
+#### Table actions (Inventory)
 
-1) **Create** `warehouse_transactions`
+1. **Create** `warehouse_transactions`
    - `type = ["adjustment"]` (inventory)
    - `warehouse_id`
    - `document_date`
    - `inventory_number`
    - `employees_id`, `comment`
 
-2) **Create** `warehouse_transaction_items` (one per product row in the UI)
+2. **Create** `warehouse_transaction_items` (one per product row in the UI)
    - `warehouse_transactions_id = <inventory>`
    - `products_id`
    - store “actual” values (fact)
    - store “system” values (snapshot at creation time) and/or store `diff`
 
-3) **Trigger recompute** for each affected scope.
+3. **Trigger recompute** for each affected scope.
 
-#### Result expectation (FIFO v2 rule)
+#### Result expectation (Inventory, FIFO v2 rule)
 
 - At the inventory date, after applying all earlier events, the engine finds the **active layer** where the remaining stock currently sits.
 - The inventory `diff = actual - system` is applied to that active layer.
@@ -170,16 +170,16 @@ For a given scope (`warehouse_id`, `products_id`) and a recompute start date `T0
 
 ### 5.1 Freeze the inputs (ledger snapshot)
 
-1) Read all relevant `warehouse_transactions` + `warehouse_transaction_items` for that scope from the beginning (or from a stored snapshot) ordered by date.
+1. Read all relevant `warehouse_transactions` + `warehouse_transaction_items` for that scope from the beginning (or from a stored snapshot) ordered by date.
 
 No mutations yet—just collect the event list.
 
 ### 5.2 Delete derived outputs in the affected window
 
-2) **Delete** (or hard-delete) derived allocation rows for events in the recompute window:
+1. **Delete** (or hard-delete) derived allocation rows for events in the recompute window:
    - remove `warehouse_transaction_stock_items` links for affected transactions/items in the scope from date `T0` onward.
 
-3) Reset derived stock state for the scope:
+2. Reset derived stock state for the scope:
    - Either:
      - **Rebuild `warehouse_stock_items` completely** from scratch from the beginning, or
      - Use snapshots and only rebuild from `T0` forward.
@@ -188,13 +188,13 @@ For a first implementation, rebuilding fully for a single product scope is simpl
 
 ### 5.3 Replay events and re-create derived rows
 
-4) For each event in chronological order:
+1. For each event in chronological order:
    - **Receiving**: ensure a FIFO layer exists in `warehouse_stock_items` for that party (`batches_id`) and time (`received_at`), and increase remaining.
    - **Shipment**: consume from FIFO layers and **create** allocation rows in `warehouse_transaction_stock_items`.
    - **Return**: restore based on the shipment’s allocation split (create allocation rows for the return too if you track it).
    - **Inventory**: compute diff and apply to the active layer; record link(s) in `warehouse_transaction_stock_items`.
 
-5) After replay finishes, **Update** `warehouse_stocks` totals by recomputing from `warehouse_stock_items`.
+2. After replay finishes, **Update** `warehouse_stocks` totals by recomputing from `warehouse_stock_items`.
 
 **Outcome**: derived tables now match the ledger history—so changing an old row changes later results, like Excel.
 
@@ -204,14 +204,14 @@ For a first implementation, rebuilding fully for a single product scope is simpl
 
 ### 6.1 Edit an old receiving (change weight or batches)
 
-#### Table actions
+#### Table actions (Edit receiving)
 
-1) **Update** the existing `warehouse_transactions` (if header changes: `document_date`, etc.)
-2) **Update** the relevant `warehouse_transaction_items` (weight/count changes, and possibly `batches_id` changes)
-3) **Trigger recompute** starting from this receiving’s `document_date`
-4) Recompute deletes and rebuilds allocations/stock downstream (section 5)
+1. **Update** the existing `warehouse_transactions` (if header changes: `document_date`, etc.)
+2. **Update** the relevant `warehouse_transaction_items` (weight/count changes, and possibly `batches_id` changes)
+3. **Trigger recompute** starting from this receiving’s `document_date`
+4. Recompute deletes and rebuilds allocations/stock downstream (section 5)
 
-#### Expected behavior
+#### Expected behavior (Edit receiving)
 
 - Some later shipments may shift consumption from Party A to Party B (or vice versa).
 - Therefore, later `warehouse_transaction_stock_items` allocations change, and `warehouse_stock_items.available_weight` changes too.
@@ -224,17 +224,17 @@ This is exactly the Excel cascade.
 
 Same structure:
 
-1) **Update** shipment header/item rows in the ledger tables
-2) **Trigger recompute** from that shipment date
-3) Downstream allocations and остатки change (including which parties are exhausted earlier)
+1. **Update** shipment header/item rows in the ledger tables
+2. **Trigger recompute** from that shipment date
+3. Downstream allocations and остатки change (including which parties are exhausted earlier)
 
 ---
 
 ### 6.3 Delete/cancel an old event
 
-1) **Delete** (or soft-delete) the ledger row(s) in `warehouse_transactions`/`warehouse_transaction_items`
-2) **Trigger recompute** from that date
-3) Derived allocations and stock rebuild to match the new history
+1. **Delete** (or soft-delete) the ledger row(s) in `warehouse_transactions`/`warehouse_transaction_items`
+2. **Trigger recompute** from that date
+3. Derived allocations and stock rebuild to match the new history
 
 ---
 
@@ -255,4 +255,3 @@ To make replay deterministic and match FIFO v2:
 - Replay engine does the same: ledger is the input, derived allocations/stock are recomputed outputs.
 
 So **“I change one thing and other things change too”** becomes an expected, safe feature—not a bug.
-
